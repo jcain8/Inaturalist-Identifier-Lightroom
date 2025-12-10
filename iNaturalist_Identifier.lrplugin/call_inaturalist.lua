@@ -124,27 +124,66 @@ local function identifyAsync(imagePath, token, callback)
 		local results = parsed.results or {}
 		if #results == 0 then
 			logger.logMessage("[Step 7] No species recognized.")
+			-- Keep legacy behavior of returning a string in the "no result" case so
+			-- downstream code that expects a string can still show an error dialog.
 			callback("🕊️ No species recognized.")
 			return
 		end
 		logger.logMessage("[Step 7] Number of predictions received: " .. #results)
 
-		-- Step 8: Format results with raw scores (Lightroom-compatible)
-		local output = { "🕊️ Recognized species:" }
-		table.insert(output, "")
+		-- Step 8: Build structured taxa table with raw scores and taxonomy
+		local taxaTable = {}
+
 		for _, r in ipairs(results) do
 			local taxon = r.taxon or {}
+
 			local name_fr = normalizeAccents(taxon.preferred_common_name or "Unknown")
 			local name_latin = taxon.name or "Unknown"
 			local raw_score = tonumber(r.combined_score) or 0
-			local line = string.format("- %s (%s) : %.3f", name_fr, name_latin, raw_score)
-			table.insert(output, line)
-			logger.logMessage("[Step 8] Recognized: " .. line)
+
+			-- Attempt to extract order and family from ancestors, if present
+			local order_name, family_name
+			local ancestors = taxon.ancestors
+			if type(ancestors) == "table" then
+				for _, anc in ipairs(ancestors) do
+					if anc.rank == "order" and not order_name then
+						order_name = anc.name
+					elseif anc.rank == "family" and not family_name then
+						family_name = anc.name
+					end
+				end
+			end
+
+			-- Convert confidence to a 0–100 percentage if it looks like a 0–1 score
+			local confidencePercent = raw_score
+			if confidencePercent <= 1 then
+				confidencePercent = confidencePercent * 100
+			end
+
+			local entry = {
+				common_name  = name_fr,
+				scientific   = name_latin,
+				order_name   = order_name,
+				family_name  = family_name,
+				confidence   = confidencePercent,
+			}
+
+			table.insert(taxaTable, entry)
+
+			logger.logMessage(string.format(
+				"[Step 8] Taxon: common='%s', scientific='%s', order='%s', family='%s', score=%.3f (%.1f%%%%)",
+				name_fr,
+				name_latin,
+				order_name or "?",
+				family_name or "?",
+				raw_score,
+				confidencePercent
+			))
 		end
 
-		-- Step 9: Return final formatted results
-		logger.logMessage("[Step 9] Returning final formatted species recognition results.")
-		callback(table.concat(output, "\n"))
+		-- Step 9: Return structured taxa table instead of a formatted string
+		logger.logMessage("[Step 9] Returning structured taxa table (" .. tostring(#taxaTable) .. " entries).")
+		callback(taxaTable)
 	end)
 end
 
